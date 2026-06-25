@@ -1,0 +1,13 @@
+.env
+# Editor swap/backup files (a .env.swp once leaked secrets — never again)
+*.swp
+*.swo
+*~
+__pycache__/
+*.pyc
+*.pyo
+/data/
+state.json
+state.json.tmp
+.venv/
+venv/
