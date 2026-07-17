@@ -17,9 +17,8 @@ import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import requests
-
 from ..geo import BBox
+from ..http import get
 
 FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 
@@ -92,7 +91,7 @@ def query_firms(
         raise RuntimeError("FIRMS_MAP_KEY is not set; cannot query FIRMS.")
 
     url = f"{FIRMS_BASE}/{map_key}/{source}/{bbox.as_envelope()}/{day_range}"
-    resp = requests.get(url, timeout=timeout)
+    resp = get(url, timeout=timeout)
     resp.raise_for_status()
     text = resp.text.strip()
 

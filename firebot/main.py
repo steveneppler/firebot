@@ -13,7 +13,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 
 from . import __version__
@@ -80,6 +80,11 @@ def _incident_changes(inc, meta: dict, cfg: Config) -> list[str]:
     return lines
 
 
+def _as_aware(dt: datetime) -> datetime:
+    """Attach the local timezone to naive datetimes (older state files / callers)."""
+    return dt.astimezone() if dt.tzinfo is None else dt
+
+
 def _relevant(cfg: Config, lat: float, lon: float) -> bool:
     """True if the point is within the true great-circle relevance radius (or filter off)."""
     if cfg.relevance_radius_miles <= 0:
@@ -108,7 +113,7 @@ def _should_alert_new(inc, meta: dict | None, cfg: Config, now: datetime) -> boo
             except (ValueError, TypeError):
                 since = None  # missing/malformed baseline timestamp -> no growth alert
             if since is not None:
-                elapsed_days = (now - since).total_seconds() / 86400.0
+                elapsed_days = (_as_aware(now) - _as_aware(since)).total_seconds() / 86400.0
                 grew = inc.acres - base
                 if (
                     elapsed_days > 0
@@ -181,7 +186,7 @@ def _collect_new_items(cfg: Config, state) -> tuple[list, list, list, list]:
 
     # Classify NIFC incidents: alert-worthy new fires, silently-tracked "pending" fires
     # (too small to alert yet), and updates to already-alerted ones.
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     new_incidents = []
     updated_incidents = []
     pending_incidents = []
@@ -245,7 +250,7 @@ def _record_incident(state, inc) -> None:
     )
 
 
-def _record_pending(state, pending) -> None:
+def _record_pending(state, pending, now: datetime | None = None) -> None:
     """Record a first-seen sub-threshold incident so its growth can be measured later.
 
     The baseline (acres + timestamp) is set on the first sighting that has a known
@@ -253,6 +258,7 @@ def _record_pending(state, pending) -> None:
     until acreage becomes known so growth is measured from a real starting point.
     Once set, the baseline is kept so growth accumulates rather than resetting each run.
     """
+    seen_ts = (now or datetime.now(timezone.utc)).isoformat()
     for inc in pending:
         key = f"nifc:{inc.key}"
         meta = state.get(key)
@@ -262,11 +268,11 @@ def _record_pending(state, pending) -> None:
                 "nifc",
                 alerted=False,
                 acres=inc.acres,
-                seen_ts=datetime.now().isoformat(),
+                seen_ts=seen_ts,
             )
         elif meta.get("acres") is None and inc.acres is not None:
             # Baseline was deferred (size unknown at first sighting); establish it now.
-            state.update_meta(key, acres=inc.acres, seen_ts=datetime.now().isoformat())
+            state.update_meta(key, acres=inc.acres, seen_ts=seen_ts)
 
 
 def run_once(cfg: Config, state, *, dry_run: bool) -> int:

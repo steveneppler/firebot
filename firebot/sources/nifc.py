@@ -9,12 +9,14 @@ Docs / dataset: https://data-nifc.opendata.arcgis.com/  (Wildland Fire Incident 
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import requests
-
 from ..geo import BBox
+from ..http import get
+
+log = logging.getLogger("firebot.nifc")
 
 NIFC_URL = (
     "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
@@ -90,11 +92,15 @@ def query_nifc(bbox: BBox, incident_types: list[str], *, timeout: int = 30) -> l
         "returnGeometry": "true",
         "f": "json",
     }
-    resp = requests.get(NIFC_URL, params=params, timeout=timeout)
+    resp = get(NIFC_URL, params=params, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if "error" in data:
         raise RuntimeError(f"NIFC query error: {data['error']}")
+    if data.get("exceededTransferLimit"):
+        # ArcGIS silently truncates past its per-request record limit; for our
+        # ~200-mile box this should never happen, so make it visible if it does.
+        log.warning("NIFC response exceeded the server transfer limit; results are truncated.")
 
     incidents: list[Incident] = []
     for feat in data.get("features", []):

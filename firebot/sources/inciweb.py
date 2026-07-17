@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
-import requests
+from ..http import get
 
 RSS_URL = "https://inciweb.wildfire.gov/incidents/rss.xml"
 
@@ -92,7 +92,7 @@ class InciWebIndex:
     @classmethod
     def fetch(cls, *, timeout: int = 30) -> "InciWebIndex":
         try:
-            resp = requests.get(RSS_URL, timeout=timeout)
+            resp = get(RSS_URL, timeout=timeout)
             resp.raise_for_status()
             return cls(_parse_rss(resp.text))
         except Exception:

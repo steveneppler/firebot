@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 
 class State:
@@ -55,7 +55,7 @@ class State:
         FIRMS hotspots and *pending* (never-alerted) NIFC incidents are transient and
         expire once older than the cutoff, so small fires that never grow don't pile up.
         """
-        cutoff = datetime.now() - timedelta(days=retention_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
         kept: dict[str, dict] = {}
         for key, meta in self.seen.items():
             is_firms = meta.get("kind") == "firms"
@@ -66,7 +66,9 @@ class State:
                 except (ValueError, TypeError):
                     # Missing/malformed timestamp (e.g. null in a hand-edited state
                     # file) -> treat as just-seen so a bad value can't crash pruning.
-                    seen_dt = datetime.now()
+                    seen_dt = datetime.now(timezone.utc)
+                if seen_dt.tzinfo is None:
+                    seen_dt = seen_dt.astimezone()  # first_seen is a naive local date
                 if seen_dt < cutoff:
                     continue
             kept[key] = meta
