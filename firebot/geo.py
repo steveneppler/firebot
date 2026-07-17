@@ -13,6 +13,20 @@ from dataclasses import dataclass
 
 EARTH_RADIUS_MILES = 3958.7613
 MILES_PER_DEG_LAT = 69.0  # close enough for bbox sizing
+ACRES_PER_SQ_MILE = 640.0
+
+
+def incident_footprint_radius_miles(acres: float | None) -> float:
+    """Radius (miles) of a circle with the same area as ``acres``.
+
+    Used to size hotspot suppression to a fire's actual footprint: a large fire's
+    perimeter can sit well beyond its reported center point. Returns 0 for an
+    unknown or non-positive size.
+    """
+    if not acres or acres <= 0:
+        return 0.0
+    sq_miles = acres / ACRES_PER_SQ_MILE
+    return math.sqrt(sq_miles / math.pi)
 
 
 @dataclass(frozen=True)
