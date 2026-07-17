@@ -51,7 +51,7 @@ FIRMS hotspots are one-shot (a satellite pixel has no stable identity to track).
 
 ## Relevance filtering
 
-Two gates keep alerts focused on fires that matter to the local area:
+Several filters keep alerts focused on fires that matter to the local area:
 
 - **Area** — the query box (`SQUARE_HALF_MILES`) is trimmed to a true great-circle
   `RELEVANCE_RADIUS_MILES` (default 100 mi), so the box corners don't leak in distant fires.

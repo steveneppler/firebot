@@ -105,8 +105,8 @@ def _should_alert_new(inc, meta: dict | None, cfg: Config, now: datetime) -> boo
         if base is not None and base_ts:
             try:
                 since = datetime.fromisoformat(base_ts)
-            except ValueError:
-                since = None
+            except (ValueError, TypeError):
+                since = None  # missing/malformed baseline timestamp -> no growth alert
             if since is not None:
                 elapsed_days = (now - since).total_seconds() / 86400.0
                 grew = inc.acres - base
@@ -205,12 +205,15 @@ def _collect_new_items(cfg: Config, state) -> tuple[list, list, list, list]:
     new_hotspots = []
     seen_keys: set[str] = set()
     supp_on = cfg.firms_suppress_near_incident_miles > 0
+    # Each incident's suppression radius depends only on the incident, so compute it
+    # once per run rather than per (hotspot x incident) comparison.
+    supp_radii = [(inc, _suppress_radius_miles(inc, cfg)) for inc in incidents] if supp_on else []
     for hs in sorted(hotspots, key=lambda h: (h.frp or 0.0), reverse=True):
         if state.has(f"firms:{hs.key}") or hs.key in seen_keys:
             continue
-        if supp_on and any(
-            haversine_miles(hs.lat, hs.lon, inc.lat, inc.lon) <= _suppress_radius_miles(inc, cfg)
-            for inc in incidents
+        if any(
+            haversine_miles(hs.lat, hs.lon, inc.lat, inc.lon) <= radius
+            for inc, radius in supp_radii
         ):
             log.debug("Suppressing hotspot %s near a known incident", hs.key)
             continue
@@ -245,18 +248,25 @@ def _record_incident(state, inc) -> None:
 def _record_pending(state, pending) -> None:
     """Record a first-seen sub-threshold incident so its growth can be measured later.
 
-    Only the first sighting sets the baseline (acres + timestamp); later sightings keep
-    the original baseline so growth accumulates rather than resetting each run.
+    The baseline (acres + timestamp) is set on the first sighting that has a known
+    acreage: if a fire is first seen before NIFC reports a size, we defer the baseline
+    until acreage becomes known so growth is measured from a real starting point.
+    Once set, the baseline is kept so growth accumulates rather than resetting each run.
     """
     for inc in pending:
-        if state.get(f"nifc:{inc.key}") is None:
+        key = f"nifc:{inc.key}"
+        meta = state.get(key)
+        if meta is None:
             state.add(
-                f"nifc:{inc.key}",
+                key,
                 "nifc",
                 alerted=False,
                 acres=inc.acres,
                 seen_ts=datetime.now().isoformat(),
             )
+        elif meta.get("acres") is None and inc.acres is not None:
+            # Baseline was deferred (size unknown at first sighting); establish it now.
+            state.update_meta(key, acres=inc.acres, seen_ts=datetime.now().isoformat())
 
 
 def run_once(cfg: Config, state, *, dry_run: bool) -> int:

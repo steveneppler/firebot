@@ -8,12 +8,14 @@ from firebot.cluster import Cluster
 from firebot.config import Config
 from firebot.main import (
     _cluster_alertable,
+    _record_pending,
     _relevant,
     _should_alert_new,
     _suppress_radius_miles,
 )
 from firebot.sources.firms import Hotspot
 from firebot.sources.nifc import Incident
+from firebot.state import State
 
 GJ_LAT, GJ_LON = 39.0639, -108.5506
 
@@ -85,6 +87,34 @@ class NewFireGateTests(unittest.TestCase):
     def test_pending_fire_reaching_min_acres_alerts(self):
         meta = {"acres": 10.0, "seen_ts": (self.now - timedelta(days=5)).isoformat()}
         self.assertTrue(_should_alert_new(inc(acres=120), meta, self.cfg, self.now))
+
+    def test_growth_gate_survives_non_string_seen_ts(self):
+        # A corrupt state file may hold a non-string seen_ts; fromisoformat raises
+        # TypeError there, which must not crash collection.
+        meta = {"acres": 10.0, "seen_ts": 12345}
+        self.assertFalse(_should_alert_new(inc(acres=40), meta, self.cfg, self.now))
+
+
+class PendingBaselineTests(unittest.TestCase):
+    def test_baseline_established_when_acreage_becomes_known(self):
+        st = State(":mem:")
+        # First sighting: acreage unknown -> pending with no usable baseline.
+        _record_pending(st, [inc(acres=None)])
+        self.assertIsNone(st.get("nifc:X")["acres"])
+        # Once a real acreage is known, the baseline (acres + seen_ts) is established.
+        _record_pending(st, [inc(acres=50)])
+        meta = st.get("nifc:X")
+        self.assertEqual(meta["acres"], 50)
+        self.assertIn("seen_ts", meta)
+
+    def test_known_baseline_not_overwritten(self):
+        st = State(":mem:")
+        _record_pending(st, [inc(acres=10)])
+        first_ts = st.get("nifc:X")["seen_ts"]
+        _record_pending(st, [inc(acres=30)])  # grew, but baseline must stay fixed
+        meta = st.get("nifc:X")
+        self.assertEqual(meta["acres"], 10)
+        self.assertEqual(meta["seen_ts"], first_ts)
 
 
 class HotspotClusterGateTests(unittest.TestCase):
