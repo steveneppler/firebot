@@ -46,7 +46,11 @@ class Config:
     #     from the center to each edge. Grand Junction, CO by default. ---
     center_lat: float = field(default_factory=lambda: _get_float("CENTER_LAT", 39.0639))
     center_lon: float = field(default_factory=lambda: _get_float("CENTER_LON", -108.5506))
-    square_half_miles: float = field(default_factory=lambda: _get_float("SQUARE_HALF_MILES", 300.0))
+    square_half_miles: float = field(default_factory=lambda: _get_float("SQUARE_HALF_MILES", 100.0))
+    # Additional true great-circle radius filter (miles) applied on top of the query
+    # box, so the box corners don't leak in distant fires. 0 disables (pure square).
+    # Default covers Grand Junction's surrounding communities out to Ouray/Telluride.
+    relevance_radius_miles: float = field(default_factory=lambda: _get_float("RELEVANCE_RADIUS_MILES", 100.0))
     # Place name used in "X mi <direction> of <label>" descriptions.
     center_label: str = field(default_factory=lambda: _get_str("CENTER_LABEL", "Grand Junction"))
 
@@ -76,6 +80,16 @@ class Config:
     # "RX" = prescribed burn, "CX" = complex. Default: wildfires only.
     nifc_incident_types: str = field(default_factory=lambda: _get_str("NIFC_INCIDENT_TYPES", "WF"))
 
+    # --- New-fire alert gate (relevance) ---
+    # A newly seen incident only alerts once it is a large fire OR is growing fast.
+    # Smaller fires are tracked silently ("pending") so growth can be measured.
+    # Alert immediately when the fire reaches this size (acres).
+    new_alert_min_acres: float = field(default_factory=lambda: _get_float("NEW_ALERT_MIN_ACRES", 100.0))
+    # ...or when a pending fire grows at least this many acres/day since first seen,
+    new_alert_acres_per_day: float = field(default_factory=lambda: _get_float("NEW_ALERT_ACRES_PER_DAY", 50.0))
+    # provided it has also grown at least this many acres in absolute terms.
+    new_alert_growth_floor: float = field(default_factory=lambda: _get_float("NEW_ALERT_GROWTH_FLOOR", 20.0))
+
     # --- Incident update alerts (re-post when a known incident changes) ---
     enable_incident_updates: bool = field(default_factory=lambda: _get_bool("ENABLE_INCIDENT_UPDATES", True))
     update_on_growth: bool = field(default_factory=lambda: _get_bool("UPDATE_ON_GROWTH", True))
@@ -92,7 +106,7 @@ class Config:
     update_containment_delta: float = field(default_factory=lambda: _get_float("UPDATE_CONTAINMENT_DELTA", 20.0))
 
     # --- FIRMS options ---
-    firms_source: str = field(default_factory=lambda: _get_str("FIRMS_SOURCE", "VIIRS_SNPP_NRT"))
+    firms_source: str = field(default_factory=lambda: _get_str("FIRMS_SOURCE", "VIIRS_NOAA20_NRT"))
     firms_day_range: int = field(default_factory=lambda: _get_int("FIRMS_DAY_RANGE", 1))
     # VIIRS confidence is low/nominal/high; keep detections at this level or above.
     # (A 300-mile box in summer can return >1000 hotspots, so "high" is the sane default.)
@@ -104,10 +118,21 @@ class Config:
     # Group detections within this many miles of each other into ONE fire alert.
     # 0 disables clustering (one alert per detection).
     firms_cluster_miles: float = field(default_factory=lambda: _get_float("FIRMS_CLUSTER_MILES", 3.0))
+    # A hotspot cluster only alerts if it has at least this many detections...
+    firms_min_cluster_detections: int = field(default_factory=lambda: _get_int("FIRMS_MIN_CLUSTER_DETECTIONS", 2))
+    # ...or a single detection at least this hot (MW). Cuts lone weak-pixel noise.
+    firms_single_detection_min_frp: float = field(
+        default_factory=lambda: _get_float("FIRMS_SINGLE_DETECTION_MIN_FRP", 50.0)
+    )
     # Suppress a hotspot if it is within this many miles of a known NIFC incident
-    # (it is almost certainly the same fire). 0 disables suppression.
+    # (it is almost certainly the same fire). 0 disables suppression. The effective
+    # radius is scaled up to a large fire's own footprint plus the buffer below.
     firms_suppress_near_incident_miles: float = field(
         default_factory=lambda: _get_float("FIRMS_SUPPRESS_NEAR_INCIDENT_MILES", 5.0)
+    )
+    # Extra margin added beyond a fire's estimated footprint radius when suppressing.
+    firms_suppress_buffer_miles: float = field(
+        default_factory=lambda: _get_float("FIRMS_SUPPRESS_BUFFER_MILES", 2.0)
     )
 
     # --- State ---

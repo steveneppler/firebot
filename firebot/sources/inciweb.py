@@ -41,9 +41,14 @@ def _norm_name(name: str) -> str:
 
 
 def _norm_rss_title(title: str) -> str:
-    """RSS titles look like 'NMGNF Bear Fire' — drop the leading unit code + trailing 'Fire'."""
+    """RSS titles look like 'NMGNF Bear Fire' — drop the leading unit code + trailing 'Fire'.
+
+    Unit codes are 2-6 uppercase alphanumerics that begin with letters (e.g. 'NMGNF',
+    'OR71S'). Requiring a leading letter avoids stripping fires literally named by number
+    (e.g. '2800 Fire'), and we only strip when other name tokens follow.
+    """
     toks = (title or "").strip().split()
-    if toks and re.fullmatch(r"[A-Z]{2,6}", toks[0]):
+    if len(toks) > 1 and re.fullmatch(r"[A-Z]{2}[A-Z0-9]{0,4}", toks[0]):
         toks = toks[1:]
     return _norm_name(" ".join(toks))
 

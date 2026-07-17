@@ -49,14 +49,23 @@ class State:
             self.seen[key].update(fields)
 
     def prune(self, retention_days: int) -> None:
-        """Drop FIRMS hotspot keys older than retention_days. Keep NIFC keys."""
+        """Drop transient keys older than retention_days.
+
+        Alerted NIFC incidents are kept indefinitely (they can stay active for weeks).
+        FIRMS hotspots and *pending* (never-alerted) NIFC incidents are transient and
+        expire once older than the cutoff, so small fires that never grow don't pile up.
+        """
         cutoff = datetime.now() - timedelta(days=retention_days)
         kept: dict[str, dict] = {}
         for key, meta in self.seen.items():
-            if meta.get("kind") == "firms":
+            is_firms = meta.get("kind") == "firms"
+            is_pending = meta.get("kind") == "nifc" and not meta.get("alerted", True)
+            if is_firms or is_pending:
                 try:
                     seen_dt = datetime.fromisoformat(meta.get("first_seen", ""))
-                except ValueError:
+                except (ValueError, TypeError):
+                    # Missing/malformed timestamp (e.g. null in a hand-edited state
+                    # file) -> treat as just-seen so a bad value can't crash pruning.
                     seen_dt = datetime.now()
                 if seen_dt < cutoff:
                     continue

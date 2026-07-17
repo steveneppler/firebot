@@ -13,6 +13,7 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime
 from functools import partial
 
 from . import __version__
@@ -25,7 +26,7 @@ from .discord import (
     post_embeds,
     post_test,
 )
-from .geo import bbox_from_center_half_extent, haversine_miles
+from .geo import bbox_from_center_half_extent, haversine_miles, incident_footprint_radius_miles
 from .maps import static_map_url
 from .sources.firms import query_firms
 from .sources.inciweb import InciWebIndex, incident_info_url
@@ -79,12 +80,67 @@ def _incident_changes(inc, meta: dict, cfg: Config) -> list[str]:
     return lines
 
 
-def _collect_new_items(cfg: Config, state) -> tuple[list, list, list]:
-    """Fetch sources; return (new_incidents, updated_incidents, new_clusters).
+def _relevant(cfg: Config, lat: float, lon: float) -> bool:
+    """True if the point is within the true great-circle relevance radius (or filter off)."""
+    if cfg.relevance_radius_miles <= 0:
+        return True
+    return haversine_miles(cfg.center_lat, cfg.center_lon, lat, lon) <= cfg.relevance_radius_miles
+
+
+def _should_alert_new(inc, meta: dict | None, cfg: Config, now: datetime) -> bool:
+    """Whether a not-yet-alerted incident is significant enough for its first alert.
+
+    ``meta`` is the stored "pending" baseline (acres + seen_ts) if we've seen this fire
+    before but held off, else None. A fire alerts once it reaches ``new_alert_min_acres``,
+    or when it grows at least ``new_alert_acres_per_day`` (and ``new_alert_growth_floor``
+    acres absolute) since we first saw it.
+    """
+    if inc.acres is None:
+        return False
+    if inc.acres >= cfg.new_alert_min_acres:
+        return True
+    if meta is not None:
+        base = meta.get("acres")
+        base_ts = meta.get("seen_ts")
+        if base is not None and base_ts:
+            try:
+                since = datetime.fromisoformat(base_ts)
+            except (ValueError, TypeError):
+                since = None  # missing/malformed baseline timestamp -> no growth alert
+            if since is not None:
+                elapsed_days = (now - since).total_seconds() / 86400.0
+                grew = inc.acres - base
+                if (
+                    elapsed_days > 0
+                    and grew >= cfg.new_alert_growth_floor
+                    and grew / elapsed_days >= cfg.new_alert_acres_per_day
+                ):
+                    return True
+    return False
+
+
+def _cluster_alertable(cluster, cfg: Config) -> bool:
+    """A hotspot cluster alerts if it has enough detections or one hot enough pixel."""
+    if cluster.count >= cfg.firms_min_cluster_detections:
+        return True
+    mf = cluster.max_frp
+    return mf is not None and mf >= cfg.firms_single_detection_min_frp
+
+
+def _suppress_radius_miles(inc, cfg: Config) -> float:
+    """Effective hotspot-suppression radius around an incident, scaled to its footprint."""
+    footprint = incident_footprint_radius_miles(inc.acres)
+    return max(cfg.firms_suppress_near_incident_miles, footprint + cfg.firms_suppress_buffer_miles)
+
+
+def _collect_new_items(cfg: Config, state) -> tuple[list, list, list, list]:
+    """Fetch sources; return (new_incidents, updated_incidents, new_clusters, pending_incidents).
 
     ``updated_incidents`` is a list of (incident, change_lines) for known incidents
     that changed enough to warrant a follow-up alert. ``new_clusters`` groups nearby
-    FIRMS detections into one fire each. State is not mutated here.
+    FIRMS detections into one fire each. ``pending_incidents`` are newly seen fires still
+    too small to alert on, returned so the caller can track their baseline. State is not
+    mutated here.
     """
     bbox = bbox_from_center_half_extent(cfg.center_lat, cfg.center_lon, cfg.square_half_miles)
     log.info(
@@ -119,13 +175,23 @@ def _collect_new_items(cfg: Config, state) -> tuple[list, list, list]:
             except Exception as exc:
                 log.error("FIRMS query failed: %s", exc)
 
-    # New NIFC incidents, and updates to known ones.
+    # Trim the square's corners to a true relevance radius so distant fires don't leak in.
+    incidents = [i for i in incidents if _relevant(cfg, i.lat, i.lon)]
+    hotspots = [h for h in hotspots if _relevant(cfg, h.lat, h.lon)]
+
+    # Classify NIFC incidents: alert-worthy new fires, silently-tracked "pending" fires
+    # (too small to alert yet), and updates to already-alerted ones.
+    now = datetime.now()
     new_incidents = []
     updated_incidents = []
+    pending_incidents = []
     for inc in incidents:
         meta = state.get(f"nifc:{inc.key}")
-        if meta is None:
-            new_incidents.append(inc)
+        if meta is None or not meta.get("alerted", True):
+            if _should_alert_new(inc, meta, cfg, now):
+                new_incidents.append(inc)
+            else:
+                pending_incidents.append(inc)  # track/refresh baseline, no alert
         elif cfg.enable_incident_updates:
             changes = _incident_changes(inc, meta, cfg)
             if changes:
@@ -134,45 +200,89 @@ def _collect_new_items(cfg: Config, state) -> tuple[list, list, list]:
     # New FIRMS hotspots, suppressing those that coincide with a known incident.
     # Collapse duplicate detections that share a dedupe key WITHIN this run (adjacent
     # VIIRS pixels round to the same key); keep the highest-FRP one as representative.
+    # Suppression radius scales to each fire's own footprint (a large fire's perimeter
+    # sits well beyond its reported center point).
     new_hotspots = []
     seen_keys: set[str] = set()
-    supp = cfg.firms_suppress_near_incident_miles
+    supp_on = cfg.firms_suppress_near_incident_miles > 0
+    # Each incident's suppression radius depends only on the incident, so compute it
+    # once per run rather than per (hotspot x incident) comparison.
+    supp_radii = [(inc, _suppress_radius_miles(inc, cfg)) for inc in incidents] if supp_on else []
     for hs in sorted(hotspots, key=lambda h: (h.frp or 0.0), reverse=True):
         if state.has(f"firms:{hs.key}") or hs.key in seen_keys:
             continue
-        if supp > 0 and any(
-            haversine_miles(hs.lat, hs.lon, inc.lat, inc.lon) <= supp for inc in incidents
+        if any(
+            haversine_miles(hs.lat, hs.lon, inc.lat, inc.lon) <= radius
+            for inc, radius in supp_radii
         ):
             log.debug("Suppressing hotspot %s near a known incident", hs.key)
             continue
         seen_keys.add(hs.key)
         new_hotspots.append(hs)
 
-    # Group nearby detections into one fire each, so a big multi-pixel fire = one alert.
-    new_clusters = cluster_hotspots(new_hotspots, cfg.firms_cluster_miles)
+    # Group nearby detections into one fire each, so a big multi-pixel fire = one alert,
+    # then drop clusters too weak to be worth alerting (lone low-FRP pixels).
+    clusters = cluster_hotspots(new_hotspots, cfg.firms_cluster_miles)
+    new_clusters = [c for c in clusters if _cluster_alertable(c, cfg)]
     if hotspots:
-        log.info("FIRMS: %d new detection(s) -> %d fire cluster(s)", len(new_hotspots), len(new_clusters))
+        log.info(
+            "FIRMS: %d new detection(s) -> %d cluster(s), %d alertable",
+            len(new_hotspots), len(clusters), len(new_clusters),
+        )
 
-    return new_incidents, updated_incidents, new_clusters
+    return new_incidents, updated_incidents, new_clusters, pending_incidents
 
 
 def _record_incident(state, inc) -> None:
-    """Store/refresh an incident's update baseline."""
+    """Store/refresh an alerted incident's update baseline."""
     state.add(
         f"nifc:{inc.key}",
         "nifc",
+        alerted=True,
         acres=inc.acres,
         contained=inc.percent_contained,
         out=inc.out_or_contained,
     )
 
 
+def _record_pending(state, pending) -> None:
+    """Record a first-seen sub-threshold incident so its growth can be measured later.
+
+    The baseline (acres + timestamp) is set on the first sighting that has a known
+    acreage: if a fire is first seen before NIFC reports a size, we defer the baseline
+    until acreage becomes known so growth is measured from a real starting point.
+    Once set, the baseline is kept so growth accumulates rather than resetting each run.
+    """
+    for inc in pending:
+        key = f"nifc:{inc.key}"
+        meta = state.get(key)
+        if meta is None:
+            state.add(
+                key,
+                "nifc",
+                alerted=False,
+                acres=inc.acres,
+                seen_ts=datetime.now().isoformat(),
+            )
+        elif meta.get("acres") is None and inc.acres is not None:
+            # Baseline was deferred (size unknown at first sighting); establish it now.
+            state.update_meta(key, acres=inc.acres, seen_ts=datetime.now().isoformat())
+
+
 def run_once(cfg: Config, state, *, dry_run: bool) -> int:
-    new_incidents, updated_incidents, new_clusters = _collect_new_items(cfg, state)
+    new_incidents, updated_incidents, new_clusters, pending_incidents = _collect_new_items(cfg, state)
     total = len(new_incidents) + len(updated_incidents) + len(new_clusters)
 
     if total == 0:
-        log.info("No new fires or updates to report.")
+        # Persist pending baselines even when there's nothing to alert on, so a slow
+        # fire's growth is measured against its first sighting on future runs.
+        if not dry_run and pending_incidents:
+            _record_pending(state, pending_incidents)
+            state.prune(cfg.state_retention_days)
+            state.save()
+            log.info("Tracked %d sub-threshold fire(s); nothing to alert.", len(pending_incidents))
+        else:
+            log.info("No new fires or updates to report.")
         return 0
 
     log.info(
@@ -226,9 +336,10 @@ def run_once(cfg: Config, state, *, dry_run: bool) -> int:
     post_embeds(cfg.discord_webhook_url, embeds)
     # Only record state after a successful post so failures get retried next run.
     for inc in new_incidents:
-        _record_incident(state, inc)
+        _record_incident(state, inc)  # promotes pending -> alerted
     for inc, _changes in updated_incidents:
         _record_incident(state, inc)  # reset baseline to current values
+    _record_pending(state, pending_incidents)  # track any still-sub-threshold fires
     for c in new_clusters:
         for key in c.member_keys:  # record every pixel so the fire isn't re-alerted
             state.add(f"firms:{key}", "firms")

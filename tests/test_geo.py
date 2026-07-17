@@ -7,6 +7,7 @@ from firebot.geo import (
     bbox_from_center_half_extent,
     compass_point,
     haversine_miles,
+    incident_footprint_radius_miles,
     initial_bearing,
     offset_description,
 )
@@ -63,6 +64,20 @@ class GeoTests(unittest.TestCase):
 
     def test_offset_zero_distance(self):
         self.assertEqual(offset_description(GJ_LAT, GJ_LON, GJ_LAT, GJ_LON, "GJ"), "at GJ")
+
+    def test_footprint_radius_none_or_zero_is_zero(self):
+        self.assertEqual(incident_footprint_radius_miles(None), 0.0)
+        self.assertEqual(incident_footprint_radius_miles(0), 0.0)
+
+    def test_footprint_radius_scales_with_acreage(self):
+        # Circle-equivalent radius: 1 sq mi = 640 acres -> radius ~0.564 mi.
+        r640 = incident_footprint_radius_miles(640)
+        self.assertAlmostEqual(r640, math.sqrt(1 / math.pi), places=2)
+        # A 50,000-acre fire is ~5 miles in radius.
+        r50k = incident_footprint_radius_miles(50_000)
+        self.assertTrue(4.5 <= r50k <= 5.5, f"got {r50k:.2f} mi")
+        # Monotonic: bigger fire -> bigger footprint.
+        self.assertGreater(incident_footprint_radius_miles(100_000), r50k)
 
 
 if __name__ == "__main__":

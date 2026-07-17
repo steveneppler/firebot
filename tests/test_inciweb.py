@@ -2,7 +2,13 @@
 
 import unittest
 
-from firebot.sources.inciweb import InciWebIndex, _parse_rss, incident_info_url, web_search_url
+from firebot.sources.inciweb import (
+    InciWebIndex,
+    _norm_rss_title,
+    _parse_rss,
+    incident_info_url,
+    web_search_url,
+)
 
 SAMPLE_RSS = """<?xml version="1.0"?>
 <rss version="2.0"><channel>
@@ -58,6 +64,29 @@ class InciWebTests(unittest.TestCase):
     def test_incident_info_url_uses_inciweb_when_matched(self):
         url = incident_info_url(self.index, "South Fork", "US-CO")
         self.assertIn("inciweb.wildfire.gov/incident-information", url)
+
+    def test_norm_strips_alpha_unit_code(self):
+        self.assertEqual(_norm_rss_title("NMGNF Bear Fire"), "bear")
+
+    def test_norm_strips_unit_code_with_digits(self):
+        # Unit codes like OR71S contain digits; they must still be stripped.
+        self.assertEqual(_norm_rss_title("OR71S East Evans Creek Fire"), "east evans creek")
+
+    def test_norm_keeps_numeric_fire_name(self):
+        # A fire literally named by number must not be mistaken for a unit code.
+        self.assertEqual(_norm_rss_title("2800 Fire"), "2800")
+
+    def test_digit_code_fire_matches(self):
+        rss = """<rss><channel><item>
+          <title>OR71S East Evans Creek Fire</title>
+          <link>https://inciweb.wildfire.gov/incident-information/or71s-east-evans-creek-fire</link>
+          <description>State: Oregon ---</description>
+        </item></channel></rss>"""
+        idx = InciWebIndex(_parse_rss(rss))
+        self.assertEqual(
+            idx.find("East Evans Creek", "OR"),
+            "https://inciweb.wildfire.gov/incident-information/or71s-east-evans-creek-fire",
+        )
 
     def test_web_search_url_encodes_query(self):
         url = web_search_url("Rapid Creek", "CO")
