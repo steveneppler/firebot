@@ -1,1 +1,4 @@
 requests>=2.31,<3
+# Direct dependency (firebot.http uses urllib3.util.retry.Retry); >=1.26 guarantees
+# the allowed_methods parameter exists.
+urllib3>=1.26,<3

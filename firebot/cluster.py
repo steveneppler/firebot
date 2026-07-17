@@ -9,8 +9,9 @@ union-find) into one ``Cluster`` so we post one alert per fire.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
-from .geo import haversine_miles
+from .geo import MILES_PER_DEG_LAT, haversine_miles
 from .sources.firms import Hotspot
 
 
@@ -18,7 +19,7 @@ from .sources.firms import Hotspot
 class Cluster:
     members: list[Hotspot]
 
-    @property
+    @cached_property
     def representative(self) -> Hotspot:
         """Hottest detection — used for the map link and headline location."""
         return max(self.members, key=lambda h: (h.frp or 0.0))
@@ -64,6 +65,12 @@ def cluster_hotspots(hotspots: list[Hotspot], radius_miles: float) -> list[Clust
     if radius_miles <= 0:
         return [Cluster([h]) for h in hotspots]
 
+    # Sort by latitude so the pairwise scan can stop early: once a candidate's
+    # latitude gap alone exceeds the radius, every later candidate is too far too.
+    # Grouping is unaffected (connected components don't depend on visit order).
+    order = sorted(range(n), key=lambda i: hotspots[i].lat)
+    max_dlat_deg = radius_miles / MILES_PER_DEG_LAT
+
     parent = list(range(n))
 
     def find(i: int) -> int:
@@ -77,8 +84,12 @@ def cluster_hotspots(hotspots: list[Hotspot], radius_miles: float) -> list[Clust
         if ra != rb:
             parent[ra] = rb
 
-    for i in range(n):
-        for j in range(i + 1, n):
+    for a in range(n):
+        i = order[a]
+        for b in range(a + 1, n):
+            j = order[b]
+            if hotspots[j].lat - hotspots[i].lat > max_dlat_deg:
+                break
             if haversine_miles(hotspots[i].lat, hotspots[i].lon, hotspots[j].lat, hotspots[j].lon) <= radius_miles:
                 union(i, j)
 

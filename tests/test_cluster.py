@@ -45,6 +45,23 @@ class ClusterTests(unittest.TestCase):
         c = cluster_hotspots(pts, 5.0)[0]
         self.assertTrue(1.5 <= c.span_miles <= 2.6, f"span {c.span_miles}")
 
+    def test_unsorted_input_chains_across_latitude(self):
+        # Input deliberately NOT sorted by latitude; the middle point chains the
+        # outer two, so the lat-sorted early-break scan must still find one cluster.
+        pts = [hs(39.060, -108.000, 10), hs(39.000, -108.000, 10), hs(39.030, -108.000, 10)]
+        clusters = cluster_hotspots(pts, 3.0)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0].count, 3)
+
+    def test_latitude_gap_beyond_radius_splits(self):
+        # Same longitude, ~7 mi of latitude apart -> beyond a 3 mi radius.
+        pts = [hs(39.00, -108.00, 10), hs(39.10, -108.00, 10)]
+        self.assertEqual(len(cluster_hotspots(pts, 3.0)), 2)
+
+    def test_representative_is_cached(self):
+        c = cluster_hotspots([hs(39.10, -108.60, 50), hs(39.11, -108.61, 90)], 3.0)[0]
+        self.assertIs(c.representative, c.representative)
+
 
 if __name__ == "__main__":
     unittest.main()

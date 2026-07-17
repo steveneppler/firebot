@@ -26,7 +26,7 @@ class FirmsTests(unittest.TestCase):
         self.bbox = bbox_from_center_half_extent(39.0639, -108.5506, 300)
 
     def _query(self, **kw):
-        with mock.patch.object(f.requests, "get", return_value=FakeResp()):
+        with mock.patch.object(f, "get", return_value=FakeResp()):
             return f.query_firms(self.bbox, "KEY", "VIIRS_SNPP_NRT", 1, **kw)
 
     def test_high_confidence_only(self):

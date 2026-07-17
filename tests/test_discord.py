@@ -1,9 +1,17 @@
-"""Tests for embed field construction (distance, links)."""
+"""Tests for embed field construction (distance, links) and webhook delivery."""
 
 import unittest
+from unittest import mock
 
+import firebot.discord as discord
 from firebot.cluster import Cluster
-from firebot.discord import build_firms_cluster_embed, build_nifc_embed, build_nifc_update_embed
+from firebot.discord import (
+    _retry_after_seconds,
+    build_firms_cluster_embed,
+    build_nifc_embed,
+    build_nifc_update_embed,
+    post_embeds,
+)
 from firebot.sources.firms import Hotspot
 from firebot.sources.nifc import Incident
 
@@ -45,6 +53,37 @@ class DiscordTests(unittest.TestCase):
         # Distance is a field, and the title no longer contains the offset text.
         self.assertRegex(_field(e, "Distance"), r"of Grand Junction$")
         self.assertNotIn("of Grand Junction", e["title"])
+
+
+class FakeResp:
+    def __init__(self, status_code=204, body=None):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON")
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class PostEmbedsTests(unittest.TestCase):
+    def test_retry_after_parses_discord_body(self):
+        self.assertEqual(_retry_after_seconds(FakeResp(429, {"retry_after": 2.5})), 2.5)
+
+    def test_retry_after_survives_non_json_429(self):
+        # A proxy can return an HTML 429; the fallback wait must not raise.
+        self.assertEqual(_retry_after_seconds(FakeResp(429)), 1.0)
+
+    def test_429_is_retried_once(self):
+        responses = [FakeResp(429, {"retry_after": 0}), FakeResp(204)]
+        with mock.patch.object(discord.session, "post", side_effect=responses) as post, \
+             mock.patch.object(discord.time, "sleep"):
+            post_embeds("https://hook.example", [{"title": "x"}])
+        self.assertEqual(post.call_count, 2)
 
 
 if __name__ == "__main__":
