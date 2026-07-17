@@ -63,7 +63,9 @@ class State:
             if is_firms or is_pending:
                 try:
                     seen_dt = datetime.fromisoformat(meta.get("first_seen", ""))
-                except ValueError:
+                except (ValueError, TypeError):
+                    # Missing/malformed timestamp (e.g. null in a hand-edited state
+                    # file) -> treat as just-seen so a bad value can't crash pruning.
                     seen_dt = datetime.now()
                 if seen_dt < cutoff:
                     continue

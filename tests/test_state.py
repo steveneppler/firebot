@@ -35,6 +35,16 @@ class PruneTests(unittest.TestCase):
         self.st.prune(7)
         self.assertIn("nifc:p", self.st.seen)
 
+    def test_prune_survives_malformed_timestamp(self):
+        # A hand-edited/corrupt state file may carry a non-string first_seen; pruning
+        # must not crash (fromisoformat raises TypeError, not ValueError, on null/number).
+        self.st.seen["firms:bad"] = {"first_seen": None, "kind": "firms"}
+        self.st.seen["nifc:bad"] = {"first_seen": 12345, "kind": "nifc", "alerted": False}
+        self.st.prune(7)  # should not raise
+        # Treated as just-seen -> kept rather than dropped.
+        self.assertIn("firms:bad", self.st.seen)
+        self.assertIn("nifc:bad", self.st.seen)
+
 
 if __name__ == "__main__":
     unittest.main()

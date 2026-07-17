@@ -133,12 +133,14 @@ def _suppress_radius_miles(inc, cfg: Config) -> float:
     return max(cfg.firms_suppress_near_incident_miles, footprint + cfg.firms_suppress_buffer_miles)
 
 
-def _collect_new_items(cfg: Config, state) -> tuple[list, list, list]:
-    """Fetch sources; return (new_incidents, updated_incidents, new_clusters).
+def _collect_new_items(cfg: Config, state) -> tuple[list, list, list, list]:
+    """Fetch sources; return (new_incidents, updated_incidents, new_clusters, pending_incidents).
 
     ``updated_incidents`` is a list of (incident, change_lines) for known incidents
     that changed enough to warrant a follow-up alert. ``new_clusters`` groups nearby
-    FIRMS detections into one fire each. State is not mutated here.
+    FIRMS detections into one fire each. ``pending_incidents`` are newly seen fires still
+    too small to alert on, returned so the caller can track their baseline. State is not
+    mutated here.
     """
     bbox = bbox_from_center_half_extent(cfg.center_lat, cfg.center_lon, cfg.square_half_miles)
     log.info(
